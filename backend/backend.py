@@ -33,6 +33,9 @@ DEFAULT_SLA_HOURS = float(os.getenv("SLA_HOURS", 24))
 # Application setup
 # ------------------------------------------------------------------
 app = FastAPI(title="Repair‑Shop State‑Machine API", version="1.0.0")
+from fastapi.staticfiles import StaticFiles
+app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
+
 
 app.add_middleware(
     CORSMiddleware,
