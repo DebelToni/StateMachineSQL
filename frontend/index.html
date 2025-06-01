@@ -1,102 +1,123 @@
-<!doctype html><html lang="en">
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" /><title>Repair Shop – Dashboard</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="assets/style.css" rel="stylesheet">
-</head><body>
-<!-- ───────────────────────── NAV ────────────────────────── -->
-<nav class="navbar fixed-top navbar-light bg-light shadow-sm px-3">
-  <a class="navbar-brand fw-bold" href="#">Repair Shop</a>
-  <div class="ms-auto">
-    <a class="btn btn-link" href="index.html">Dashboard</a>
-    <a class="btn btn-link" href="technicians.html">Technicians</a>
-    <a class="btn btn-link" href="sla.html">SLA Breaches</a>
-  </div>
-</nav>
-
-<!-- ───────────────────── Content container ──────────────── -->
-<main class="container">
-
-  <div id="stats" class="row g-3"></div>
-
-  <div class="card mt-4">
-    <div class="card-body">
-      <h5>Throughput (last 30 days)</h5>
-      <canvas id="tpChart" height="80"></canvas>
-    </div>
-  </div>
-
-  <div class="card mt-4">
-    <div class="card-body">
-      <h5>Top Transitions</h5>
-      <div class="table-responsive" style="max-height:18rem;">
-        <table class="table table-sm">
-          <thead><tr><th>From</th><th>Signal</th><th>To</th><th>Count</th></tr></thead>
-          <tbody id="heatRows"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-</main>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script type="module">
-  import {getJSON, fillTable, $} from "./assets/api.js";
-
-  /* === Fetch all three endpoints in parallel === */
-  const [units, tp30, heat] = await Promise.all([
-    getJSON("/units"),
-    getJSON("/throughput?days=30"),
-    getJSON("/heatmap"),
-  ]);
-
-  /* -------- summary cards -------- */
-  const total = units.length;
-  const finished = units.filter(u => u.current_state === "reported").length;
-  const wip  = total - finished;
-  const transitions = heat.length;
-
-  const metrics = [
-    {label:"Total Units",      val: total},
-    {label:"Work in Progress", val: wip},
-    {label:"Completed",        val: finished},
-    {label:"Transitions",      val: transitions},
-  ];
-
-  const statRow = $("#stats");
-  metrics.forEach(m => {
-    statRow.insertAdjacentHTML("beforeend", `
-      <div class="col-6 col-lg-3">
-        <div class="card text-center h-100">
-          <div class="card-body d-flex flex-column justify-content-center">
-            <h5>${m.label}</h5>
-            <div class="display-6 fw-bold">${m.val}</div>
-          </div>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Repair Shop Management</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔧 Repair Shop Management</h1>
+            <p>Управление на сервизни задачи и процеси</p>
         </div>
-      </div>`);
-  });
 
-  /* -------- throughput chart -------- */
-  const ctx = $("#tpChart");
-  new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels: tp30.map(d => d.day.slice(5)),          // mm-dd
-      datasets: [
-        { label:"OK",    data: tp30.map(d=>d.ok_jobs)    },
-        { label:"Fail",  data: tp30.map(d=>d.failed_jobs)}
-      ]
-    },
-    options: {
-      plugins:{legend:{position:"bottom"}}, 
-      responsive:true, scales:{y:{beginAtZero:true}}
-    }
-  });
+        <div class="nav-tabs">
+            <div class="nav-tab active" onclick="showTab('dashboard')">📊 Dashboard</div>
+            <div class="nav-tab" onclick="showTab('workers')">👷 Workers</div>
+            <div class="nav-tab" onclick="showTab('processes')">⚙️ Processes</div>
+            <div class="nav-tab" onclick="showTab('analytics')">📈 Analytics</div>
+        </div>
 
-  /* -------- heatmap table -------- */
-  fillTable($("#heatRows"), heat.slice(0,20),
-    ["from_state","signal_name","to_state","cnt"]);
-</script>
-</body></html>
+        <!-- Dashboard Tab -->
+        <div id="dashboard" class="tab-content active">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <h3>📋 Current Units</h3>
+                    <div id="currentUnits" class="loading">Loading...</div>
+                </div>
+                <div class="card">
+                    <h3>⚠️ SLA Breaches</h3>
+                    <div id="slaBreaches" class="loading">Loading...</div>
+                </div>
+                <div class="card">
+                    <h3>👥 Technician Board</h3>
+                    <div id="technicianBoard" class="loading">Loading...</div>
+                </div>
+                <div class="card">
+                    <h3>📊 Daily Throughput</h3>
+                    <canvas id="throughputChart" width="400" height="200"></canvas>
+                </div>
+            </div>
+        </div>
 
+        <!-- Workers Tab -->
+        <div id="workers" class="tab-content">
+            <div class="card">
+                <h3>👷 Worker Analysis</h3>
+                <div class="worker-selector">
+                    <select id="workerSelect">
+                        <option value="">Select a worker...</option>
+                    </select>
+                </div>
+                <div id="workerStats" style="display: none;">
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value" id="avgTaskTime">-</div>
+                            <div class="stat-label">Avg Task Time (min)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalTasks">-</div>
+                            <div class="stat-label">Total Tasks</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="completedTasks">-</div>
+                            <div class="stat-label">Completed</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="currentTask">-</div>
+                            <div class="stat-label">Current Task</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dashboard-grid">
+                <div class="card">
+                    <h3>📋 Current Task</h3>
+                    <div id="currentWorkerTask" class="loading">Select a worker...</div>
+                </div>
+                <div class="card">
+                    <h3>📊 Average Task Durations</h3>
+                    <div id="avgDurations" class="loading">Select a worker...</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>📈 Task History</h3>
+                <div id="taskHistory" class="task-list">
+                    <div class="loading">Select a worker...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Processes Tab -->
+        <div id="processes" class="tab-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="color: white;">🔄 All Processes</h2>
+                <button class="refresh-btn" onclick="loadProcesses()">🔄 Refresh</button>
+            </div>
+            <div id="processGrid" class="process-grid">
+                <div class="loading">Loading processes...</div>
+            </div>
+        </div>
+
+        <!-- Analytics Tab -->
+        <div id="analytics" class="tab-content">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <h3>📊 State Transitions</h3>
+                    <div id="heatmapData" class="loading">Loading...</div>
+                </div>
+                <div class="card">
+                    <h3>⏱️ Average State Durations</h3>
+                    <canvas id="durationsChart" width="400" height="300"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
