@@ -2,7 +2,6 @@ const API_BASE = 'http://localhost:8000';
 let currentWorker = null;
 let workersData = new Map();
 
-// Tab navigation
 function showTab(tabName) {
     document.querySelectorAll('.tab-content').forEach(tab => {
         tab.classList.remove('active');
@@ -14,7 +13,6 @@ function showTab(tabName) {
     document.getElementById(tabName).classList.add('active');
     event.target.classList.add('active');
 
-    // Load tab-specific data
     if (tabName === 'dashboard') {
         loadDashboard();
     } else if (tabName === 'workers') {
@@ -26,7 +24,6 @@ function showTab(tabName) {
     }
 }
 
-// API helper
 async function apiCall(endpoint) {
     try {
         const response = await fetch(`${API_BASE}${endpoint}`);
@@ -38,7 +35,6 @@ async function apiCall(endpoint) {
     }
 }
 
-// Extract technician from payload
 function extractTechnician(payload) {
     if (!payload) return null;
     if (typeof payload === 'string') {
@@ -51,24 +47,23 @@ function extractTechnician(payload) {
     return payload.technician_id || payload.tech || null;
 }
 
-// Load dashboard data
 async function loadDashboard() {
     try {
-        // Load current units
+
         const units = await apiCall('/units');
         displayCurrentUnits(units);
 
-        // Load SLA breaches
         const slaBreaches = await apiCall('/sla-breaches');
         displaySLABreaches(slaBreaches);
 
-        // Load technician board
         const techBoard = await apiCall('/technicians');
         displayTechnicianBoard(techBoard);
 
-        // Load throughput chart
         const throughput = await apiCall('/throughput?days=7');
         displayThroughputChart(throughput);
+
+        const stateDistribution = await apiCall('/analytics/state-distribution');
+        displayStateDistribution(stateDistribution);
 
     } catch (error) {
         showError('Failed to load dashboard data');
@@ -83,16 +78,17 @@ function displayCurrentUnits(units) {
     }
 
     container.innerHTML = units.slice(0, 5).map(unit => `
-                <div class="task-item">
-                    <div class="task-header">
-                        <div class="task-name">${unit.unit_name}</div>
-                        <div class="task-time">${formatDate(unit.state_since)}</div>
-                    </div>
-                    <div class="task-details">
-                        Status: <strong>${unit.current_state}</strong>
-                    </div>
-                </div>
-            `).join('');
+        <div class="task-item">
+            <div class="task-header">
+                <div class="task-name">${unit.unit_name}</div>
+                <div class="task-time">${formatDate(unit.state_since)}</div>
+            </div>
+            <div class="task-details">
+                Status: <strong>${unit.current_state}</strong>
+                ${unit.technician && unit.technician !== 'Unassigned' ? `<br>Tech: <strong>${unit.technician}</strong>` : ''}
+            </div>
+        </div>
+    `).join('');
 }
 
 function displaySLABreaches(breaches) {
@@ -103,16 +99,16 @@ function displaySLABreaches(breaches) {
     }
 
     container.innerHTML = breaches.map(breach => `
-                <div class="task-item error">
-                    <div class="task-header">
-                        <div class="task-name">${breach.unit_name}</div>
-                        <div class="task-time">${Math.round(breach.hours_in_state)}h</div>
-                    </div>
-                    <div class="task-details">
-                        Stuck in: <strong>${breach.state_name}</strong>
-                    </div>
-                </div>
-            `).join('');
+        <div class="task-item error">
+            <div class="task-header">
+                <div class="task-name">${breach.unit_name}</div>
+                <div class="task-time">${Math.round(breach.hours_in_state)}h</div>
+            </div>
+            <div class="task-details">
+                Stuck in: <strong>${breach.state_name}</strong>
+            </div>
+        </div>
+    `).join('');
 }
 
 function displayTechnicianBoard(techBoard) {
@@ -127,20 +123,44 @@ function displayTechnicianBoard(techBoard) {
         if (!grouped[item.technician]) {
             grouped[item.technician] = {};
         }
-        grouped[item.technician][item.state] = item.cnt;
+        grouped[item.technician][item.state] = {
+            cnt: item.cnt,
+            avg_time: item.avg_time_in_state_minutes || 0
+        };
     });
 
     container.innerHTML = Object.entries(grouped).map(([tech, states]) => `
-                <div class="task-item">
-                    <div class="task-header">
-                        <div class="task-name">${tech || 'Unassigned'}</div>
-                        <div class="task-time">${Object.values(states).reduce((a, b) => a + b, 0)} tasks</div>
-                    </div>
-                    <div class="task-details">
-                        ${Object.entries(states).map(([state, cnt]) => `${state}: ${cnt}`).join(', ')}
-                    </div>
-                </div>
-            `).join('');
+        <div class="task-item">
+            <div class="task-header">
+                <div class="task-name">${tech || 'Unassigned'}</div>
+                <div class="task-time">${Object.values(states).reduce((a, b) => a + b.cnt, 0)} tasks</div>
+            </div>
+            <div class="task-details">
+                ${Object.entries(states).map(([state, data]) => 
+                    `${state}: ${data.cnt} (${Math.round(data.avg_time)}min avg)`
+                ).join('<br>')}
+            </div>
+        </div>
+    `).join('');
+}
+
+function displayStateDistribution(distribution) {
+    const container = document.getElementById('stateDistribution');
+    if (!container) return; 
+
+    if (distribution.length === 0) {
+        container.innerHTML = '<p>No state data available</p>';
+        return;
+    }
+
+    container.innerHTML = distribution.slice(0, 5).map(state => `
+        <div class="task-item">
+            <div class="task-header">
+                <div class="task-name">${state.state_name}</div>
+                <div class="task-time">${state.unit_count} units (${state.percentage}%)</div>
+            </div>
+        </div>
+    `).join('');
 }
 
 function displayThroughputChart(data) {
@@ -161,6 +181,12 @@ function displayThroughputChart(data) {
                 borderColor: '#e53e3e',
                 backgroundColor: 'rgba(229, 62, 62, 0.1)',
                 tension: 0.4
+            }, {
+                label: 'Total Activity',
+                data: data.map(d => d.total_transitions || 0),
+                borderColor: '#3182ce',
+                backgroundColor: 'rgba(49, 130, 206, 0.1)',
+                tension: 0.4
             }]
         },
         options: {
@@ -179,24 +205,54 @@ function displayThroughputChart(data) {
     });
 }
 
-// Load workers data
 async function loadWorkers() {
     try {
-        // Load technician board to get list of workers
-        const techBoard = await apiCall('/technicians');
-        const workers = [...new Set(techBoard.map(item => item.technician).filter(Boolean))];
+
+        const workers = await apiCall('/workers/list');
 
         const workerSelect = document.getElementById('workerSelect');
         workerSelect.innerHTML = '<option value="">Select a worker...</option>' +
             workers.map(worker => `<option value="${worker}">${worker}</option>`).join('');
 
-        // Load average durations for all workers
+        const workerPerformance = await apiCall('/analytics/worker-performance');
+        displayWorkerPerformanceOverview(workerPerformance);
+
         const avgDurations = await apiCall('/states/average-durations');
         displayAverageDurations(avgDurations);
 
     } catch (error) {
         showError('Failed to load workers data');
     }
+}
+
+function displayWorkerPerformanceOverview(performance) {
+    const container = document.getElementById('workerPerformanceOverview');
+    if (!container) return; 
+
+    if (performance.length === 0) {
+        container.innerHTML = '<p>No worker performance data available</p>';
+        return;
+    }
+
+    container.innerHTML = performance.slice(0, 5).map(worker => {
+        const successRate = worker.total_actions > 0 
+            ? Math.round((worker.successful_completions / worker.total_actions) * 100)
+            : 0;
+
+        return `
+            <div class="task-item ${successRate > 80 ? 'success' : (successRate < 60 ? 'error' : '')}">
+                <div class="task-header">
+                    <div class="task-name">${worker.technician}</div>
+                    <div class="task-time">${successRate}% success</div>
+                </div>
+                <div class="task-details">
+                    Units: ${worker.total_units_handled} | 
+                    Actions: ${worker.total_actions} | 
+                    Avg Response: ${worker.avg_response_time_minutes || 0}min
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
 async function selectWorker() {
@@ -211,97 +267,114 @@ async function selectWorker() {
     currentWorker = selectedWorker;
     document.getElementById('workerStats').style.display = 'block';
 
+    document.getElementById('currentWorkerTask').innerHTML = '<div class="loading">Loading current tasks...</div>';
+    document.getElementById('taskHistory').innerHTML = '<div class="loading">Loading task history...</div>';
+
     try {
-        // Load current units and filter by technician
-        const units = await apiCall('/units');
-        const techBoard = await apiCall('/technicians');
 
-        // Find current task for this worker
-        const workerTasks = techBoard.filter(item => item.technician === selectedWorker);
-        displayCurrentWorkerTask(workerTasks);
+        const currentUnits = await apiCall(`/workers/${selectedWorker}/units`);
+        displayWorkerCurrentUnits(currentUnits);
 
-        // Load task history (we'll simulate this from available data)
-        displayTaskHistory(selectedWorker, units);
+        const performance = await apiCall(`/workers/${selectedWorker}/performance`);
+        updateWorkerDetailedStats(performance);
 
-        // Update worker stats
-        updateWorkerStats(selectedWorker, workerTasks);
+        const history = await apiCall(`/workers/${selectedWorker}/history?days=7`);
+        displayWorkerHistory(history);
 
     } catch (error) {
-        showError('Failed to load worker data');
+        showError(`Failed to load data for worker ${selectedWorker}`);
     }
 }
 
-function displayCurrentWorkerTask(tasks) {
+function displayWorkerCurrentUnits(units) {
     const container = document.getElementById('currentWorkerTask');
-    if (tasks.length === 0) {
+
+    if (units.length === 0) {
         container.innerHTML = '<p>No current tasks</p>';
         return;
     }
 
-    container.innerHTML = tasks.map(task => `
-                <div class="task-item current">
-                    <div class="task-header">
-                        <div class="task-name">${task.state}</div>
-                        <div class="task-time">${task.cnt} units</div>
-                    </div>
-                </div>
-            `).join('');
+    container.innerHTML = units.map(unit => `
+        <div class="task-item current">
+            <div class="task-header">
+                <div class="task-name">${unit.unit_name}</div>
+                <div class="task-time">${Math.round(unit.minutes_in_state)}min</div>
+            </div>
+            <div class="task-details">
+                Current: <strong>${unit.current_state}</strong><br>
+                Since: ${formatDate(unit.state_since)}
+            </div>
+        </div>
+    `).join('');
 }
 
-function displayTaskHistory(worker, units) {
+function updateWorkerDetailedStats(performance) {
+    if (!performance) return;
+
+    document.getElementById('totalTasks').textContent = performance.total_units_handled || 0;
+    document.getElementById('completedTasks').textContent = performance.successful_completions || 0;
+    document.getElementById('avgTaskTime').textContent = Math.round(performance.avg_response_time_minutes || 0);
+    document.getElementById('currentTask').textContent = performance.active_days || 0;
+}
+
+function displayWorkerHistory(history) {
     const container = document.getElementById('taskHistory');
-    // Simulate task history based on available data
-    const recentTasks = units.slice(0, 10).map((unit, index) => ({
-        name: unit.unit_name,
-        state: unit.current_state,
-        time: unit.state_since,
-        status: index % 4 === 0 ? 'error' : (index % 3 === 0 ? 'success' : 'normal')
-    }));
 
-    container.innerHTML = recentTasks.map(task => `
-                <div class="task-item ${task.status}">
-                    <div class="task-header">
-                        <div class="task-name">${task.name}</div>
-                        <div class="task-time">${formatDate(task.time)}</div>
-                    </div>
-                    <div class="task-details">
-                        State: <strong>${task.state}</strong>
-                    </div>
+    if (history.length === 0) {
+        container.innerHTML = '<div class="loading">No recent history available</div>';
+        return;
+    }
+
+    container.innerHTML = history.map(item => {
+        const isSuccess = item.signal_name === 'finished work ok';
+        const isError = item.signal_name === 'finished work failed';
+        const taskClass = isSuccess ? 'success' : (isError ? 'error' : '');
+
+        return `
+            <div class="task-item ${taskClass}">
+                <div class="task-header">
+                    <div class="task-name">${item.unit_name}</div>
+                    <div class="task-time">${formatDate(item.timestamp)}</div>
                 </div>
-            `).join('');
-}
-
-function updateWorkerStats(worker, tasks) {
-    const totalTasks = tasks.reduce((sum, task) => sum + task.cnt, 0);
-    document.getElementById('totalTasks').textContent = totalTasks;
-    document.getElementById('completedTasks').textContent = Math.floor(totalTasks * 0.8);
-    document.getElementById('avgTaskTime').textContent = Math.floor(Math.random() * 120 + 30);
-    document.getElementById('currentTask').textContent = tasks.length > 0 ? tasks[0].state : 'None';
+                <div class="task-details">
+                    ${item.from_state} → <strong>${item.to_state}</strong><br>
+                    Signal: <em>${item.signal_name}</em>
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
 function displayAverageDurations(durations) {
     const container = document.getElementById('avgDurations');
     container.innerHTML = durations.slice(0, 5).map(duration => `
-                <div class="task-item">
-                    <div class="task-header">
-                        <div class="task-name">${duration.state_name}</div>
-                        <div class="task-time">${duration.avg_minutes} min</div>
-                    </div>
-                </div>
-            `).join('');
+        <div class="task-item">
+            <div class="task-header">
+                <div class="task-name">${duration.state_name}</div>
+                <div class="task-time">${duration.avg_minutes}min avg</div>
+            </div>
+            <div class="task-details">
+                Range: ${duration.min_minutes || 0}-${duration.max_minutes || 0}min | 
+                Total: ${duration.total_transitions || 0} transitions
+            </div>
+        </div>
+    `).join('');
 }
 
-// Load processes
 async function loadProcesses() {
     try {
         const units = await apiCall('/units');
-        displayProcesses(units);
+        displayEnhancedProcesses(units);
+
+        const bottlenecks = await apiCall('/analytics/bottlenecks');
+        displayBottleneckAnalysis(bottlenecks);
+
     } catch (error) {
         showError('Failed to load processes');
     }
 }
 
-function displayProcesses(units) {
+function displayEnhancedProcesses(units) {
     const container = document.getElementById('processGrid');
 
     if (units.length === 0) {
@@ -309,60 +382,98 @@ function displayProcesses(units) {
         return;
     }
 
-    container.innerHTML = units.map(unit => {
-        const isError = unit.current_state.includes('missing') || unit.current_state.includes('failed');
-        const isSuccess = unit.current_state === 'reported' || unit.current_state === 'end of service';
+    const sortedUnits = units.sort((a, b) => {
+        const aIsError = a.current_state.includes('missing') || a.current_state.includes('failed');
+        const bIsError = b.current_state.includes('missing') || b.current_state.includes('failed');
+
+        if (aIsError && !bIsError) return -1;
+        if (!aIsError && bIsError) return 1;
+
+        return new Date(a.state_since) - new Date(b.state_since);
+    });
+
+    container.innerHTML = sortedUnits.map(unit => {
+        const isError = unit.current_state.includes('missing') ||
+            unit.current_state.includes('failed') ||
+            unit.current_state.includes('error');
+
+        const isSuccess = unit.current_state === 'reported' ||
+            unit.current_state === 'end of service';
+
         const cardClass = isError ? 'error' : (isSuccess ? 'success' : '');
 
+        const timeInState = Math.round((new Date() - new Date(unit.state_since)) / (1000 * 60));
+        const timeDisplay = timeInState > 60 ?
+            `${Math.round(timeInState / 60)}h ${timeInState % 60}m` :
+            `${timeInState}m`;
+
         return `
-                    <div class="process-card ${cardClass}">
-                        <div class="process-header">
-                            <div class="process-name">${unit.unit_name}</div>
-                            <div class="process-status status-${unit.current_state.replace(/\s+/g, '-')}">${unit.current_state}</div>
-                        </div>
-                        <div class="task-details">
-                            <strong>Since:</strong> ${formatDate(unit.state_since)}
-                        </div>
-                        <div class="process-timeline">
-                            ${generateTimeline(unit)}
-                        </div>
-                    </div>
-                `;
+            <div class="process-card ${cardClass}" onclick="showUnitDetails(${unit.unit_id})">
+                <div class="process-header">
+                    <div class="process-name">${unit.unit_name}</div>
+                    <div class="process-status status-${unit.current_state.replace(/\s+/g, '-')}">${unit.current_state}</div>
+                </div>
+                <div class="task-details">
+                    <strong>Time in state:</strong> ${timeDisplay}<br>
+                    ${unit.technician && unit.technician !== 'Unassigned' ? `<strong>Technician:</strong> ${unit.technician}<br>` : ''}
+                    <strong>Since:</strong> ${formatDate(unit.state_since)}
+                    ${unit.details ? `<br><strong>Details:</strong> ${JSON.stringify(unit.details)}` : ''}
+                </div>
+                <div class="process-timeline">
+                    ${generateEnhancedTimeline(unit)}
+                </div>
+            </div>
+        `;
     }).join('');
 }
 
-function generateTimeline(unit) {
-    const states = ['neutral', 'registered', 'assigned', 'dispatched', 'start of service', 'end of service', 'reported'];
-    const currentIndex = states.indexOf(unit.current_state);
+function displayBottleneckAnalysis(bottlenecks) {
+    const container = document.getElementById('bottleneckAnalysis');
+    if (!container) return; 
 
-    return states.map((state, index) => {
-        let dotClass = '';
-        if (index < currentIndex) dotClass = 'completed';
-        else if (index === currentIndex) dotClass = 'current';
+    if (bottlenecks.length === 0) {
+        container.innerHTML = '<p>No bottleneck data available</p>';
+        return;
+    }
 
-        if (unit.current_state.includes('missing') && state === 'parts missing') {
-            dotClass = 'error';
-        }
+    const sortedBottlenecks = bottlenecks.sort((a, b) => b.avg_hours_in_state - a.avg_hours_in_state);
+
+    container.innerHTML = sortedBottlenecks.slice(0, 5).map(bottleneck => {
+        const isHighBottleneck = bottleneck.avg_hours_in_state > 24;
+        const cardClass = isHighBottleneck ? 'error' : (bottleneck.avg_hours_in_state > 8 ? 'warning' : '');
 
         return `
-                    <div class="timeline-item">
-                        <div class="timeline-dot ${dotClass}"></div>
-                        <div class="timeline-text">${state}</div>
-                        <div class="timeline-time">${index <= currentIndex ? formatDate(unit.state_since) : ''}</div>
-                    </div>
-                `;
+            <div class="task-item ${cardClass}">
+                <div class="task-header">
+                    <div class="task-name">${bottleneck.state_name}</div>
+                    <div class="task-time">${Math.round(bottleneck.avg_hours_in_state)}h avg</div>
+                </div>
+                <div class="task-details">
+                    Units: ${bottleneck.units_currently_in_state} | 
+                    Max: ${Math.round(bottleneck.max_hours_in_state)}h
+                </div>
+            </div>
+        `;
     }).join('');
 }
 
-// Load analytics
 async function loadAnalytics() {
     try {
+
         const heatmap = await apiCall('/heatmap');
         displayHeatmap(heatmap);
 
         const avgDurations = await apiCall('/states/average-durations');
-        // Continue from where the frontend left off
         displayDurationsChart(avgDurations);
+
+        const dailyActivity = await apiCall('/analytics/daily-activity?days=7');
+        displayDailyActivityChart(dailyActivity);
+
+        const hourlyActivity = await apiCall('/analytics/hourly-activity?hours=24');
+        displayHourlyActivityChart(hourlyActivity);
+
+        const stateDistribution = await apiCall('/analytics/state-distribution');
+        displayStateDistributionChart(stateDistribution);
 
     } catch (error) {
         showError('Failed to load analytics data');
@@ -377,26 +488,25 @@ function displayHeatmap(heatmapData) {
         return;
     }
 
-    // Group transitions by frequency
     const sortedTransitions = heatmapData
         .sort((a, b) => b.cnt - a.cnt)
-        .slice(0, 10); // Show top 10 transitions
+        .slice(0, 10); 
 
     container.innerHTML = `
-            <div class="task-list">
-                ${sortedTransitions.map(transition => `
-                    <div class="task-item">
-                        <div class="task-header">
-                            <div class="task-name">${transition.from_state} → ${transition.to_state}</div>
-                            <div class="task-time">${transition.cnt} times</div>
-                        </div>
-                        <div class="task-details">
-                            Signal: <strong>${transition.signal_name}</strong>
-                        </div>
+        <div class="task-list">
+            ${sortedTransitions.map(transition => `
+                <div class="task-item">
+                    <div class="task-header">
+                        <div class="task-name">${transition.from_state} → ${transition.to_state}</div>
+                        <div class="task-time">${transition.cnt} times</div>
                     </div>
-                `).join('')}
-            </div>
-        `;
+                    <div class="task-details">
+                        Signal: <strong>${transition.signal_name}</strong>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
 }
 
 function displayDurationsChart(durations) {
@@ -443,136 +553,118 @@ function displayDurationsChart(durations) {
     });
 }
 
-// Enhanced worker analysis functions
-async function loadDetailedWorkerAnalysis(workerId) {
-    try {
-        // Get units assigned to this worker and their durations
-        const units = await apiCall('/units');
-        const workerUnits = units.filter(unit => {
-            // Extract technician from unit details or state
-            const tech = extractTechnician(unit.details);
-            return tech === workerId;
-        });
+function displayDailyActivityChart(data) {
+    const ctx = document.getElementById('dailyActivityChart');
+    if (!ctx) return; 
 
-        // For each unit, get detailed duration data
-        const detailedAnalysis = await Promise.all(
-            workerUnits.map(async (unit) => {
-                try {
-                    const durations = await apiCall(`/units/${unit.unit_id}/durations`);
-                    return {unit, durations};
-                } catch (error) {
-                    console.warn(`Failed to load durations for unit ${unit.unit_id}`);
-                    return {unit, durations: []};
+    const processedData = {};
+    data.forEach(item => {
+        const day = formatDate(item.day);
+        if (!processedData[day]) {
+            processedData[day] = { total: 0, signals: {} };
+        }
+        processedData[day].total += item.activity_count;
+        processedData[day].signals[item.signal_name] = item.activity_count;
+    });
+
+    new Chart(ctx.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: Object.keys(processedData),
+            datasets: [{
+                label: 'Total Activity',
+                data: Object.values(processedData).map(d => d.total),
+                borderColor: '#3182ce',
+                backgroundColor: 'rgba(49, 130, 206, 0.1)',
+                tension: 0.4
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'top',
                 }
-            })
-        );
-
-        return detailedAnalysis;
-    } catch (error) {
-        console.error('Failed to load detailed worker analysis:', error);
-        return [];
-    }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
 }
 
-async function updateWorkerDetailedStats(workerId) {
-    try {
-        const analysis = await loadDetailedWorkerAnalysis(workerId);
+function displayHourlyActivityChart(data) {
+    const ctx = document.getElementById('hourlyActivityChart');
+    if (!ctx) return; 
 
-        // Calculate detailed statistics
-        const allDurations = analysis.flatMap(item => item.durations);
-        const completedTasks = allDurations.filter(d => d.left_at && d.left_at !== d.entered_at);
-
-        const avgTaskTime = completedTasks.length > 0
-            ? Math.round(completedTasks.reduce((sum, d) => sum + d.minutes_spent, 0) / completedTasks.length)
-            : 0;
-
-        const currentTasks = analysis.filter(item =>
-            item.durations.some(d => !d.left_at || d.left_at === 'now()')
-        );
-
-        // Update stats display
-        document.getElementById('avgTaskTime').textContent = avgTaskTime;
-        document.getElementById('totalTasks').textContent = analysis.length;
-        document.getElementById('completedTasks').textContent = completedTasks.length;
-        document.getElementById('currentTask').textContent = currentTasks.length;
-
-        // Update current task display
-        displayWorkerCurrentTasks(currentTasks);
-
-        // Update task history
-        displayWorkerTaskHistory(analysis);
-
-    } catch (error) {
-        console.error('Failed to update worker stats:', error);
-    }
+    new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: data.map(d => new Date(d.hour).getHours() + ':00'),
+            datasets: [{
+                label: 'Activity Count',
+                data: data.map(d => d.activity_count),
+                backgroundColor: 'rgba(56, 161, 105, 0.6)',
+                borderColor: '#38a169',
+                borderWidth: 1
+            }, {
+                label: 'Active Technicians',
+                data: data.map(d => d.active_technicians),
+                backgroundColor: 'rgba(229, 62, 62, 0.6)',
+                borderColor: '#e53e3e',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'top',
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
 }
 
-function displayWorkerCurrentTasks(currentTasks) {
-    const container = document.getElementById('currentWorkerTask');
+function displayStateDistributionChart(data) {
+    const ctx = document.getElementById('stateDistributionChart');
+    if (!ctx) return; 
 
-    if (currentTasks.length === 0) {
-        container.innerHTML = '<p>No current tasks</p>';
-        return;
-    }
-
-    container.innerHTML = currentTasks.map(task => {
-        const currentState = task.durations.find(d => !d.left_at || d.left_at === 'now()');
-        const timeInState = currentState ? Math.round(currentState.minutes_spent) : 0;
-
-        return `
-                <div class="task-item current">
-                    <div class="task-header">
-                        <div class="task-name">${task.unit.unit_name}</div>
-                        <div class="task-time">${timeInState} min</div>
-                    </div>
-                    <div class="task-details">
-                        Current: <strong>${currentState ? currentState.state_name : 'Unknown'}</strong>
-                    </div>
-                </div>
-            `;
-    }).join('');
+    new Chart(ctx.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            labels: data.map(d => d.state_name),
+            datasets: [{
+                data: data.map(d => d.unit_count),
+                backgroundColor: data.map((_, index) =>
+                    `hsl(${index * 360 / data.length}, 70%, 60%)`
+                ),
+                borderColor: data.map((_, index) =>
+                    `hsl(${index * 360 / data.length}, 70%, 50%)`
+                ),
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'right',
+                }
+            }
+        }
+    });
 }
 
-function displayWorkerTaskHistory(analysis) {
-    const container = document.getElementById('taskHistory');
-
-    // Flatten all tasks and sort by most recent
-    const allTasks = analysis.flatMap(item =>
-        item.durations.map(duration => ({
-            ...duration,
-            unit_name: item.unit.unit_name,
-            unit_id: item.unit.unit_id
-        }))
-    ).sort((a, b) => new Date(b.entered_at) - new Date(a.entered_at));
-
-    if (allTasks.length === 0) {
-        container.innerHTML = '<div class="loading">No task history available</div>';
-        return;
-    }
-
-    container.innerHTML = allTasks.slice(0, 20).map(task => {
-        const isCompleted = task.left_at && task.left_at !== 'now()';
-        const isOvertime = task.minutes_spent > 120; // Flag tasks over 2 hours
-        const taskClass = isCompleted ? (isOvertime ? 'error' : 'success') : 'current';
-
-        return `
-                <div class="task-item ${taskClass}">
-                    <div class="task-header">
-                        <div class="task-name">${task.unit_name} - ${task.state_name}</div>
-                        <div class="task-time">${Math.round(task.minutes_spent)} min</div>
-                    </div>
-                    <div class="task-details">
-                        Started: ${formatDate(task.entered_at)}
-                        ${isCompleted ? `<br>Completed: ${formatDate(task.left_at)}` : '<br><strong>In Progress</strong>'}
-                    </div>
-                </div>
-            `;
-    }).join('');
-}
-
-// Enhanced process timeline with better state tracking
 function generateEnhancedTimeline(unit) {
-    // Define standard repair shop states with their typical order
+
     const standardStates = [
         {name: 'neutral', label: 'Received', icon: '📥'},
         {name: 'registered', label: 'Registered', icon: '📝'},
@@ -598,124 +690,64 @@ function generateEnhancedTimeline(unit) {
             dotClass = 'error';
             timeDisplay = formatDate(currentTime);
         } else {
-            // For this demo, we'll assume previous states were completed
-            // In a real app, you'd fetch the complete history
+
             const stateIndex = standardStates.findIndex(s => s.name === state.name);
             const currentIndex = standardStates.findIndex(s => s.name === currentState);
 
             if (stateIndex < currentIndex) {
                 dotClass = 'completed';
-                // Simulate earlier timestamps
+
                 const hoursAgo = (currentIndex - stateIndex) * 2;
                 timeDisplay = formatDate(new Date(currentTime.getTime() - hoursAgo * 60 * 60 * 1000));
             }
         }
 
         return `
-                <div class="timeline-item">
-                    <div class="timeline-dot ${dotClass}"></div>
-                    <div class="timeline-text">${state.icon} ${state.label}</div>
-                    <div class="timeline-time">${timeDisplay}</div>
-                </div>
-            `;
+            <div class="timeline-item">
+                <div class="timeline-dot ${dotClass}"></div>
+                <div class="timeline-text">${state.icon} ${state.label}</div>
+                <div class="timeline-time">${timeDisplay}</div>
+            </div>
+        `;
     }).join('');
 }
 
-// Enhanced process display with better error detection
-function displayEnhancedProcesses(units) {
-    const container = document.getElementById('processGrid');
-
-    if (units.length === 0) {
-        container.innerHTML = '<div class="card"><p>No processes found</p></div>';
-        return;
-    }
-
-    // Sort units by priority: errors first, then by time in current state
-    const sortedUnits = units.sort((a, b) => {
-        const aIsError = a.current_state.includes('missing') || a.current_state.includes('failed');
-        const bIsError = b.current_state.includes('missing') || b.current_state.includes('failed');
-
-        if (aIsError && !bIsError) return -1;
-        if (!aIsError && bIsError) return 1;
-
-        return new Date(a.state_since) - new Date(b.state_since);
-    });
-
-    container.innerHTML = sortedUnits.map(unit => {
-        const isError = unit.current_state.includes('missing') ||
-            unit.current_state.includes('failed') ||
-            unit.current_state.includes('error');
-
-        const isSuccess = unit.current_state === 'reported' ||
-            unit.current_state === 'end of service';
-
-        const cardClass = isError ? 'error' : (isSuccess ? 'success' : '');
-
-        // Calculate time in current state
-        const timeInState = Math.round((new Date() - new Date(unit.state_since)) / (1000 * 60));
-        const timeDisplay = timeInState > 60 ?
-            `${Math.round(timeInState / 60)}h ${timeInState % 60}m` :
-            `${timeInState}m`;
-
-        // Extract technician if available
-        const technician = extractTechnician(unit.details);
-
-        return `
-                <div class="process-card ${cardClass}" onclick="showUnitDetails(${unit.unit_id})">
-                    <div class="process-header">
-                        <div class="process-name">${unit.unit_name}</div>
-                        <div class="process-status status-${unit.current_state.replace(/\s+/g, '-')}">${unit.current_state}</div>
-                    </div>
-                    <div class="task-details">
-                        <strong>Time in state:</strong> ${timeDisplay}<br>
-                        ${technician ? `<strong>Technician:</strong> ${technician}<br>` : ''}
-                        <strong>Since:</strong> ${formatDate(unit.state_since)}
-                        ${unit.details ? `<br><strong>Details:</strong> ${JSON.stringify(unit.details)}` : ''}
-                    </div>
-                    <div class="process-timeline">
-                        ${generateEnhancedTimeline(unit)}
-                    </div>
-                </div>
-            `;
-    }).join('');
-}
-
-// Unit details modal (simplified)
 async function showUnitDetails(unitId) {
     try {
         const durations = await apiCall(`/units/${unitId}/durations`);
 
-        // Create a simple modal-like display
         const modal = document.createElement('div');
         modal.style.cssText = `
-                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-                background: rgba(0,0,0,0.5); z-index: 1000;
-                display: flex; align-items: center; justify-content: center;
-                padding: 20px;
-            `;
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5); z-index: 1000;
+            display: flex; align-items: center; justify-content: center;
+            padding: 20px;
+        `;
 
         modal.innerHTML = `
-                <div style="background: white; border-radius: 20px; padding: 30px; max-width: 600px; max-height: 80vh; overflow-y: auto;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                        <h3>Unit ${unitId} Timeline</h3>
-                        <button onclick="this.closest('div').parentElement.remove()" style="background: none; border: none; font-size: 24px; cursor: pointer;">&times;</button>
-                    </div>
-                    <div class="task-list">
-                        ${durations.map(duration => `
-                            <div class="task-item ${duration.left_at ? 'success' : 'current'}">
-                                <div class="task-header">
-                                    <div class="task-name">${duration.state_name}</div>
-                                    <div class="task-time">${Math.round(duration.minutes_spent)} min</div>
-                                </div>
-                                <div class="task-details">
-                                    Entered: ${formatDate(duration.entered_at)}<br>
-                                    ${duration.left_at ? `Left: ${formatDate(duration.left_at)}` : '<strong>Currently here</strong>'}
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
+            <div style="background: white; border-radius: 20px; padding: 30px; max-width: 600px; max-height: 80vh; overflow-y: auto;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h3>Unit ${unitId} Timeline</h3>
+                    <button onclick="this.closest('div').parentElement.remove()" style="background: none; border: none; font-size: 24px; cursor: pointer;">&times;</button>
                 </div>
-            `;
+                <div class="task-list">
+                    ${durations.map(duration => `
+                        <div class="task-item ${duration.left_at === 'now()' || !duration.left_at ? 'current' : 'success'}">
+                            <div class="task-header">
+                                <div class="task-name">${duration.state_name}</div>
+                                <div class="task-time">${Math.round(duration.minutes_spent)} min</div>
+                            </div>
+                            <div class="task-details">
+                                Entered: ${formatDate(duration.entered_at)}<br>
+                                ${duration.left_at && duration.left_at !== 'now()' 
+                                    ? `Left: ${formatDate(duration.left_at)}` 
+                                    : '<strong>Currently here</strong>'}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
 
         document.body.appendChild(modal);
     } catch (error) {
@@ -723,38 +755,14 @@ async function showUnitDetails(unitId) {
     }
 }
 
-// Update the selectWorker function to use the new detailed analysis
-document.getElementById('workerSelect').addEventListener('change', async function () {
-    const selectedWorker = this.value;
-    if (!selectedWorker) {
-        document.getElementById('workerStats').style.display = 'none';
-        document.getElementById('currentWorkerTask').innerHTML = 'Select a worker...';
-        document.getElementById('taskHistory').innerHTML = '<div class="loading">Select a worker...</div>';
-        document.getElementById('avgDurations').innerHTML = 'Select a worker...';
-        return;
+document.addEventListener('DOMContentLoaded', function() {
+
+    const workerSelect = document.getElementById('workerSelect');
+    if (workerSelect) {
+        workerSelect.addEventListener('change', selectWorker);
     }
-
-    currentWorker = selectedWorker;
-    document.getElementById('workerStats').style.display = 'block';
-
-    // Show loading states
-    document.getElementById('currentWorkerTask').innerHTML = '<div class="loading">Loading current tasks...</div>';
-    document.getElementById('taskHistory').innerHTML = '<div class="loading">Loading task history...</div>';
-
-    await updateWorkerDetailedStats(selectedWorker);
 });
 
-// Update the loadProcesses function to use enhanced display
-async function loadProcesses() {
-    try {
-        const units = await apiCall('/units');
-        displayEnhancedProcesses(units);
-    } catch (error) {
-        showError('Failed to load processes');
-    }
-}
-
-// Utility functions
 function formatDate(dateString) {
     if (!dateString) return '';
     const date = new Date(dateString);
@@ -770,7 +778,7 @@ function formatDate(dateString) {
 }
 
 function showError(message) {
-    // Find existing error or create new one
+
     let errorDiv = document.querySelector('.error-message');
     if (!errorDiv) {
         errorDiv = document.createElement('div');
@@ -780,7 +788,6 @@ function showError(message) {
 
     errorDiv.textContent = message;
 
-    // Auto-hide after 5 seconds
     setTimeout(() => {
         if (errorDiv.parentNode) {
             errorDiv.parentNode.removeChild(errorDiv);
@@ -788,11 +795,9 @@ function showError(message) {
     }, 5000);
 }
 
-// Auto-refresh functionality
 let autoRefreshInterval;
 
 function startAutoRefresh() {
-    // Refresh every 30 seconds
     autoRefreshInterval = setInterval(() => {
         const activeTab = document.querySelector('.nav-tab.active').textContent.toLowerCase();
         if (activeTab.includes('dashboard')) {
@@ -809,13 +814,10 @@ function stopAutoRefresh() {
     }
 }
 
-// Initialize the application
 document.addEventListener('DOMContentLoaded', function () {
-    // Load initial data
     loadDashboard();
     startAutoRefresh();
 
-    // Handle visibility change to pause/resume auto-refresh
     document.addEventListener('visibilitychange', function () {
         if (document.hidden) {
             stopAutoRefresh();
@@ -825,7 +827,6 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 
-// Add keyboard shortcuts
 document.addEventListener('keydown', function (e) {
     if (e.ctrlKey || e.metaKey) {
         switch (e.key) {
